@@ -2,6 +2,35 @@
 
 A Flask-based REST API server that provides GPT model interaction and file management capabilities.
 
+## Git Tips
+
+Enhance your workflow with these detailed Git tips:
+
+```bash
+# 1. Before pushing, update your local repository:
+git fetch -p  # Fetch remote changes and prune deleted branches
+
+# 2. If the main branch has new changes:
+git checkout main
+git pull      # Update your local main branch with the latest commits
+git checkout your_branch
+git rebase -i main  # Interactively rebase your branch to integrate changes and resolve conflicts
+
+# 3. When starting a new feature or fix:
+git checkout -b your_branch  # Create a new branch based on the updated main
+# Develop your feature, then repeat step 2 to stay in sync with main
+git push --set-upstream origin your_branch  # Push your branch to the remote repository
+
+# 4. Once your changes are reviewed:
+# Open a pull request on GitHub to merge your_branch into main
+```
+
+Additional tips:
+- Use descriptive commit messages.
+- Frequently rebase to catch conflicts early.
+- Leverage branch protection rules on GitHub for quality control.
+- Consider squashing commits for a cleaner history.
+
 ## Setup
 1. Install dependencies:
 ```sh
