@@ -126,6 +126,31 @@ see more [details](https://flask.palletsprojects.com/en/stable/tutorial/factory/
 ## Todo
 1. Add Database
 
+## login on ECS
+Ip: 120.25.178.24 
+
+### login 
+1. download private key in group chat.
+
+the key file name is `dataset_app.pem`
+please contact Wenjie (wduaj@cse.ust.hk) 
+and move it in `~/.ssh/` 
+
+2. Add the config in ~/.ssh/config
+
+`chmod 400 ~/.ssh/dataset_app.pem` 
+
+```
+Host ecs 
+  HostName 120.25.178.24 
+  Port 22 
+  User root 
+  IdentityFile ~/.ssh/dataset_app.pem 
+```
+
+3. Use ssh login 
+Terminal or VSCode 
+
 ## References
 - [Flask File Uploading](https://flask.palletsprojects.com/en/stable/patterns/fileuploads/)
 - [Flask Database](https://flask.palletsprojects.com/en/stable/tutorial/database/)
