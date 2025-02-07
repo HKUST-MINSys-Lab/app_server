@@ -21,22 +21,6 @@ def create_app():
 
     return app
 
-# for uploading the userID
-# @app.route('/set_user', methods=['POST'])
-# def set_user():
-#     user_id = request.json.get('user_id')
-#     if user_id:
-#         session['user_id'] = user_id
-#         return jsonify({"status": "success", "message": f"User ID set successfully: {session.get('user_id')}"}), 200
-#     return jsonify({"status": "error", "message": "User ID is required"}), 400
-
-# @app.route('/get_user', methods=['GET'])
-# def get_user():
-#     user_id = session.get('user_id')
-#     if user_id:
-#         return jsonify({"status": "success", "user_id": user_id}), 200
-#     return jsonify({"status": "error", "message": "No user ID set"}), 404
-
 @app.route('/get_intervention', methods=['POST'])
 def get_intervention():
     user_id =  request.json.get("user_id")
@@ -55,6 +39,23 @@ def get_intervention():
         return jsonify({"status": "error", "message": "File not found"}), 404
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/send_intervention_feedback', methods=['POST'])
+def send_intervention_feedback():
+    try:
+        user_id = request.json.get("user_id")
+        intervention = request.json.get("intervention")
+        interventionRating = request.json.get("interventionRating")
+        feedback = request.json.get("feedback")
+
+        file_path = "uploads/intervention_feedbacks.csv"
+        contents = f"{user_id},{intervention},{interventionRating},{feedback}"
+        with open(file_path, 'a') as file:
+            file.write(contents + '\n')  # Adding a newline for better formatting
+        
+        return jsonify({"status": "success", "message": "successful"}), 200
+    except:
+        return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
 @app.route('/get_summary', methods=['POST'])
 def get_summary():
@@ -76,7 +77,13 @@ def send_summary_feedback():
         chosen =  request.json.get("chosen")
         feedbackRating = request.json.get("feedbackRating")
         userSummary =  request.json.get("userSummary")
+        timeStamp = request.json.get("timestamp")
 
+        file_path = "uploads/summary_feedbacks.csv"
+        contents = f"{user_id},{summaryA},{summaryB},{chosen},{feedbackRating},{userSummary},{timeStamp}"
+        with open(file_path, 'a') as file:
+            file.write(contents + '\n')  # Adding a newline for better formatting
+                
         return jsonify({"status": "success", "message": "successful"}), 200
     except:
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
@@ -89,7 +96,12 @@ def send_weekly_survey():
         pss4 = request.json.get("pss4")
         gad7 = request.json.get("gad7")
 
-        return jsonify({"status": "success", "message": "successful"}), 200
+        file_path = "uploads/weekly_surveys.csv"
+        contents = f"{user_id},{phq4},{pss4},{gad7}"
+        with open(file_path, 'a') as file:
+            file.write(contents + '\n')  # Adding a newline for better formatting
+        
+        return jsonify({"status": "success", "message": "successful!"}), 200
     except:
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
@@ -98,7 +110,7 @@ def upload():
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
     if user_id and csv_content: 
-        file_path = f"uploads/{user_id}.csv"
+        file_path = "uploads/uploads.csv"
         # Open the file in append mode and write the csv_content
         with open(file_path, 'a') as file:
             file.write(csv_content + '\n')  # Adding a newline for better formatting
