@@ -87,7 +87,7 @@ def send_weekly_survey():
         user_id =  request.json.get("user_id")
         phq4 = request.json.get("phq4")
         pss4 = request.json.get("pss4")
-        panas = request.json.get("panas")
+        gad7 = request.json.get("gad7")
 
         return jsonify({"status": "success", "message": "successful"}), 200
     except:
