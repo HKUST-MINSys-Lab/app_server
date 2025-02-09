@@ -118,6 +118,19 @@ def upload():
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
+@app.route("/upload_ios", methods=['POST'])
+def upload_ios():
+    user_id = request.json.get("user_id")
+    csv_content = request.json.get("csv_content")
+    if user_id and csv_content: 
+        file_path = "uploads/uploads_ios.csv"
+        # Open the file in append mode and write the csv_content
+        with open(file_path, 'a') as file:
+            file.write(csv_content + '\n')  # Adding a newline for better formatting
+        return jsonify({"status": "success", "user_id": user_id, "csv_content": csv_content}), 200
+    else: 
+        return jsonify({"status": "error", "message": "unsuccessful"}), 400
+
 if __name__ == '__main__':
     app = create_app()
     app.run(host="0.0.0.0")
