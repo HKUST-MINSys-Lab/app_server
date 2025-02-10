@@ -68,3 +68,5 @@ target/
 
 # VS Code settings
 .vscode/
+
+.env
