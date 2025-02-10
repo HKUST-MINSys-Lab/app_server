@@ -155,3 +155,4 @@ Terminal or VSCode
 - [Flask File Uploading](https://flask.palletsprojects.com/en/stable/patterns/fileuploads/)
 - [Flask Database](https://flask.palletsprojects.com/en/stable/tutorial/database/)
 - [Run application](https://flask.palletsprojects.com/en/stable/tutorial/factory/#run-the-application)
+- [MongoDB](https://www.mongodb.com/zh-cn/docs/)

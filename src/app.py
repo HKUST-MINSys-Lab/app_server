@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+from pymongo import MongoClient
 
 # 将项目的根目录加入到 sys.path 中
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -11,12 +12,20 @@ from src.routes.gpt_routes import gpt_bp
 from src.services.generate_summary import generate_summary
 from dotenv import load_dotenv
 import pandas as pd
+import datetime
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Set a secret key for session management
 
+def get_db():
+    client = MongoClient(os.getenv("MONGODB_URI"))
+    return client.get_database()
+
 def create_app():
+    # Initialize MongoDB connection
+    app.mongodb_client = MongoClient(os.getenv("MONGODB_URI"))
+    app.db = app.mongodb_client.get_database()
     
     # Register blueprints
     app.register_blueprint(upload_bp)
