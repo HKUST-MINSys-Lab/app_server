@@ -22,12 +22,12 @@ app.secret_key = os.urandom(24)  # Set a secret key for session management
 
 def get_db():
     client = MongoClient(os.getenv("MONGODB_URI"))
-    return client.get_database()
+    return client.get_database(os.getenv("MONGODB_DB"))
 
 def create_app():
     # Initialize MongoDB connection
     app.mongodb_client = MongoClient(os.getenv("MONGODB_URI"))
-    app.db = app.mongodb_client.get_database()
+    app.db = app.mongodb_client.get_database(os.getenv("MONGODB_DB"))
     
     # Register blueprints
     app.register_blueprint(upload_bp)
@@ -86,7 +86,7 @@ def get_intervention():
 
             # Count current app occurrences.
             app = row.get("current app", "").strip()
-            if app:
+            if app and app != None and app != "" and app != "null":
                 app_counts[app] = app_counts.get(app, 0) + 1
 
             # Count wifi_ssid occurrences.
@@ -232,13 +232,19 @@ def upload():
         csv_header = (
             "timestamp,volume,screen_on_ratio,wifi_connected,wifi_ssid,"
             "network_traffic,Rx_traffic,Tx_traffic,stepcount_sensor,"
-            "gpsLat,gpsLon,battery,current app,bluetooth devices\n"
+            "gpsLat,gpsLon,battery,current app,bluetooth devices,UNK\n"
         )
         csv_content = csv_header + csv_content
         
         csv_io = io.StringIO(csv_content)
         csv_reader = csv.DictReader(csv_io)
-        csv_data = [row for row in csv_reader]
+        csv_data = []
+        for row in csv_reader:
+            # Convert from string to integer
+            timestamp_ms = int(row["timestamp"])
+            # Convert milliseconds to a Python datetime in UTC
+            row["timestamp"] = datetime.datetime.utcfromtimestamp(timestamp_ms / 1000.0)
+            csv_data.append(row)
         
         # Basic check if CSV data is not empty
         if not csv_data:
