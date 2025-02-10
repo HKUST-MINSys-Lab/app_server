@@ -1,10 +1,16 @@
+import os
+import sys
+import csv
+
+# 将项目的根目录加入到 sys.path 中
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from flask import Flask, request, jsonify
 from src.routes.upload_routes import upload_bp
 from src.routes.gpt_routes import gpt_bp
+from src.services.generate_summary import generate_summary
 from dotenv import load_dotenv
-import os
 import pandas as pd
-
 load_dotenv()
 
 app = Flask(__name__)
@@ -61,32 +67,33 @@ def send_intervention_feedback():
 def get_summary():
     user_id = request.json.get("user_id")
     if user_id:
+        summaryA, summaryB = generate_summary(user_id)
         return jsonify({"status": "success", 
-                        "summaryA": "this is a dummy summary A.",
-                        "summaryB": "this is a dummy summary B."
+                        "summaryA": summaryA,
+                        "summaryB": summaryB,
                         }), 200
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
 @app.route('/send_summary_feedback', methods= ["POST"])
 def send_summary_feedback():
-    try: 
-        user_id =  request.json.get("user_id")
+    try:
+        user_id = request.json.get("user_id")
         summaryA = request.json.get("summaryA")
         summaryB = request.json.get("summaryB")
-        chosen =  request.json.get("chosen")
+        chosen = request.json.get("chosen")
         feedbackRating = request.json.get("feedbackRating")
-        userSummary =  request.json.get("userSummary")
+        userSummary = request.json.get("userSummary")
         timeStamp = request.json.get("timestamp")
 
         file_path = "uploads/summary_feedbacks.csv"
-        contents = f"{user_id},{summaryA},{summaryB},{chosen},{feedbackRating},{userSummary},{timeStamp}"
-        with open(file_path, 'a') as file:
-            file.write(contents + '\n')  # Adding a newline for better formatting
-                
+        with open(file_path, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([user_id, summaryA, summaryB, chosen, feedbackRating, userSummary, timeStamp])
+
         return jsonify({"status": "success", "message": "successful"}), 200
-    except:
-        return jsonify({"status": "error", "message": "unsuccessful"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
 
 @app.route('/send_weekly_survey', methods= ["POST"])
 def send_weekly_survey():
