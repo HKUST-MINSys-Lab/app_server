@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import csv
@@ -10,6 +11,7 @@ from flask import Flask, request, jsonify
 from src.routes.upload_routes import upload_bp
 from src.routes.gpt_routes import gpt_bp
 from src.services.generate_summary import generate_summary
+from src.services.query_gpt import query
 from dotenv import load_dotenv
 import pandas as pd
 import datetime
@@ -38,18 +40,114 @@ def create_app():
 
 @app.route('/get_intervention', methods=['POST'])
 def get_intervention():
-    user_id =  request.json.get("user_id")
-    file_path = 'test.txt'
     try:
-        # Read the contents of the file
-        with open(file_path, 'r') as f:
-            intervention_text = f.read()
+        # CSV header for reference (not used directly in the logic)
+        csv_header = (
+            "timestamp,volume,screen_on_ratio,wifi_connected,wifi_ssid,"
+            "network_traffic,Rx_traffic,Tx_traffic,stepcount_sensor,"
+            "gpsLat,gpsLon,battery,current app,bluetooth devices\n"
+        )  # timestamp is index
+
+        user_id = request.json.get("user_id")
+        if not user_id:
+            return jsonify({"status": "error", "message": "Missing user_id"}), 400
+
+        db = get_db()
+        user_collection = db[f"uploads_{user_id}"]
+
+        # Query last 1 hour data
+        last_hour = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+        # Recommended: use count_documents instead of count() if using a recent PyMongo version.
+        if user_collection.count_documents({"timestamp": {"$gt": last_hour}}) == 0:
+            return jsonify({"status": "success", "intervention": None}), 200
+
+        last_hour_data = user_collection.find({"timestamp": {"$gt": last_hour}})
+        # 统计总量屏时间占比，所有app名称中前三的三个app名称，
+        # 出现最多的wifi名称，
+        # 总网络数据量，
+        # 总步数，
+        # Initialize aggregation variables.
+        total_screen_ratio = 0.0
+        count_ratio = 0
+        app_counts = {}
+        wifi_counts = {}
+        total_network_data = 0.0
+        total_steps = 0
+
+        # Iterate over the documents returned by the query.
+        for row in last_hour_data:
+            # Screen on ratio
+            try:
+                ratio = float(row.get("screen_on_ratio", 0))
+            except Exception:
+                ratio = 0.0
+            total_screen_ratio += ratio
+            count_ratio += 1
+
+            # Count current app occurrences.
+            app = row.get("current app", "").strip()
+            if app:
+                app_counts[app] = app_counts.get(app, 0) + 1
+
+            # Count wifi_ssid occurrences.
+            wifi = row.get("wifi_ssid", "").strip()
+            if wifi:
+                wifi_counts[wifi] = wifi_counts.get(wifi, 0) + 1
+
+            # Sum network traffic.
+            try:
+                network_val = float(row.get("network_traffic", 0))
+            except Exception:
+                network_val = 0.0
+            total_network_data += network_val
+
+            # Sum step count.
+            try:
+                steps = int(row.get("stepcount_sensor", 0))
+            except Exception:
+                steps = 0
+            total_steps += steps
+
+        # Calculate average screen on ratio.
+        avg_screen_on_ratio = total_screen_ratio / count_ratio if count_ratio > 0 else 0.0
+
+        # Determine the top three most frequent apps.
+        # Option 1: Only names (current approach)
+        # top_apps = [app for app, count in sorted(app_counts.items(), key=lambda x: x[1], reverse=True)[:3]]
         
-        # Return the intervention text in JSON format
-        return jsonify({
-            "status": "success",
-            "intervention": intervention_text
-        }), 200
+        # Option 2: Names with usage percentages (if desired)
+        total_app_counts = sum(app_counts.values())
+        top_apps = [
+            {"app": app, "percentage": (count / total_app_counts) * 100 if total_app_counts > 0 else 0}
+            for app, count in sorted(app_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        ]
+
+        # Determine the most frequent wifi_ssid.
+        most_frequent_wifi = max(wifi_counts.items(), key=lambda x: x[1])[0] if wifi_counts else None
+
+        # Construct the prompt.
+        # NOTE: Verify that each metric is in the intended place.
+        prompt = (
+            "Assuming you are a health assistant used to remind and intervene with various mobile phone users. "
+            "I will provide statistical data for the past hour: for each hour of sensor data, the percentage of total screen activation time is {}, "
+            "the top three app names and their corresponding usage percentages are {} (including system applications, please identify and exclude them), "
+            "the wifi name is {}, the percentage of sound volume is mostly {}, the total network data volume (MB) is {}, "
+            "and the total number of steps is {}. Please comprehensively analyze the possible behavioral states of users and provide friendly "
+            "and humane intervention reminders for the parts that you are more confident about, without being too long, including gentle suggestions and some reasons. "
+            "Please return the content directly."
+        )
+        # You might want to adjust the fourth parameter if total_screen_ratio is not meant to be the sound volume percentage.
+        intervention = query(prompt.format(
+            avg_screen_on_ratio,
+            top_apps,
+            most_frequent_wifi,
+            total_screen_ratio,  # Consider revising if this is not the intended metric
+            total_network_data,
+            total_steps
+        ), 'gpt-4o-mini')
+
+        return jsonify({"status": "success", "intervention": intervention}), 200
+
     except FileNotFoundError:
         return jsonify({"status": "error", "message": "File not found"}), 404
     except Exception as e:
@@ -63,10 +161,14 @@ def send_intervention_feedback():
         interventionRating = request.json.get("interventionRating")
         feedback = request.json.get("feedback")
 
-        file_path = "uploads/intervention_feedbacks.csv"
-        contents = f"{user_id},{intervention},{interventionRating},{feedback}"
-        with open(file_path, 'a') as file:
-            file.write(contents + '\n')  # Adding a newline for better formatting
+        db = get_db()
+        db.intervention_feedbacks.insert_one({
+            "user_id": user_id,
+            "intervention": intervention,
+            "rating": interventionRating,
+            "feedback": feedback,
+            "timestamp": datetime.datetime.utcnow()
+        })
         
         return jsonify({"status": "success", "message": "successful"}), 200
     except:
@@ -125,12 +227,36 @@ def send_weekly_survey():
 def upload():
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
-    if user_id and csv_content: 
-        file_path = "uploads/uploads.csv"
-        # Open the file in append mode and write the csv_content
-        with open(file_path, 'a') as file:
-            file.write(csv_content + '\n')  # Adding a newline for better formatting
-        return jsonify({"status": "success", "user_id": user_id, "csv_content": csv_content}), 200
+    if user_id and csv_content:
+        # Correct the CSV header
+        csv_header = (
+            "timestamp,volume,screen_on_ratio,wifi_connected,wifi_ssid,"
+            "network_traffic,Rx_traffic,Tx_traffic,stepcount_sensor,"
+            "gpsLat,gpsLon,battery,current app,bluetooth devices\n"
+        )
+        csv_content = csv_header + csv_content
+        
+        csv_io = io.StringIO(csv_content)
+        csv_reader = csv.DictReader(csv_io)
+        csv_data = [row for row in csv_reader]
+        
+        # Basic check if CSV data is not empty
+        if not csv_data:
+            return jsonify({"status": "error", "message": "No valid CSV data provided"}), 400
+
+        db = get_db()
+        user_collection = db[f"uploads_{user_id}"]
+        user_collection.create_index("timestamp", unique=True)
+        
+        try:
+            result = user_collection.insert_many(csv_data, ordered=False)
+        except Exception as e:
+            # Handle insertion errors, for example duplicate key errors
+            return jsonify({"status": "error", "message": str(e)}), 500
+        
+        # Return a success message with inserted IDs
+        return jsonify({"status": "success", "user_id": user_id}), 200
+
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
