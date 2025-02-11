@@ -127,15 +127,7 @@ def get_intervention():
 
         # Construct the prompt.
         # NOTE: Verify that each metric is in the intended place.
-        prompt = (
-            "Assuming you are a health assistant used to remind and intervene with various mobile phone users. "
-            "I will provide statistical data for the past hour: for each hour of sensor data, the percentage of total screen activation time is {}, "
-            "the top three app names and their corresponding usage percentages are {} (including system applications, please identify and exclude them), "
-            "the wifi name is {}, the percentage of sound volume is mostly {}, the total network data volume (MB) is {}, "
-            "and the total number of steps is {}. Please comprehensively analyze the possible behavioral states of users and provide friendly "
-            "and humane intervention reminders for the parts that you are more confident about, without being too long, including gentle suggestions and some reasons. "
-            "Please return the content directly."
-        )
+        prompt = """Assuming you are a health assistant, used to remind and intervene with various smartphone users. I will provide statistical data for the past hour: the percentage of sensor data to total screen activation time per hour is {}, the top three application names and their corresponding usage rates are {} (including system applications, please identify and exclude), the wifi name is {}, the volume percentage is mainly {}, the total network data volume (MB) is {}, and the total number of steps is {}. Please comprehensively analyze the possible behavioral states of users, select the most meaningful one or two aspects of health reminders based on data, and provide friendly and humanized intervention reminders. Must be concise, reasonable. Please return the generated content directly."""
         # You might want to adjust the fourth parameter if total_screen_ratio is not meant to be the sound volume percentage.
         intervention = query(prompt.format(
             avg_screen_on_ratio,
@@ -178,7 +170,8 @@ def send_intervention_feedback():
 def get_summary():
     user_id = request.json.get("user_id")
     if user_id:
-        summaryA, summaryB = generate_summary(user_id)
+        db = get_db()
+        summaryA, summaryB = generate_summary(user_id, db)
         return jsonify({"status": "success", 
                         "summaryA": summaryA,
                         "summaryB": summaryB,
@@ -197,10 +190,18 @@ def send_summary_feedback():
         userSummary = request.json.get("userSummary")
         timeStamp = request.json.get("timestamp")
 
-        file_path = "uploads/summary_feedbacks.csv"
-        with open(file_path, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow([user_id, summaryA, summaryB, chosen, feedbackRating, userSummary, timeStamp])
+        feedback_data = {
+            "user_id": user_id,
+            "summaryA": summaryA,
+            "summaryB": summaryB,
+            "chosen": chosen,
+            "feedbackRating": feedbackRating,
+            "userSummary": userSummary,
+            "timestamp": timeStamp  # Ensure timeStamp is in an appropriate format (e.g., ISO 8601)
+        }
+
+        db = get_db()
+        db.summary_feedbacks.insert_one(feedback_data)
 
         return jsonify({"status": "success", "message": "successful"}), 200
     except Exception as e:
@@ -214,10 +215,14 @@ def send_weekly_survey():
         pss4 = request.json.get("pss4")
         gad7 = request.json.get("gad7")
 
-        file_path = "uploads/weekly_surveys.csv"
-        contents = f"{user_id},{phq4},{pss4},{gad7}"
-        with open(file_path, 'a') as file:
-            file.write(contents + '\n')  # Adding a newline for better formatting
+        db = get_db()
+        db.weekly_surveys.insert_one({
+            "user_id": user_id,
+            "phq4": phq4,
+            "pss4": pss4,
+            "gad7": gad7,
+            "timestamp": datetime.datetime.utcnow()
+        })
         
         return jsonify({"status": "success", "message": "successful!"}), 200
     except:
@@ -268,6 +273,7 @@ def upload():
 
 @app.route("/upload_ios", methods=['POST'])
 def upload_ios():
+    # please imatate the upload function above
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
     if user_id and csv_content: 
