@@ -4,7 +4,6 @@ import sys
 import csv
 from pymongo import MongoClient
 
-# 将项目的根目录加入到 sys.path 中
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from flask import Flask, request, jsonify
@@ -15,6 +14,25 @@ from src.services.query_gpt import query
 from dotenv import load_dotenv
 import pandas as pd
 import datetime
+import logging
+import csv
+import datetime
+
+log_file = '/root/app_server/app_output.log'
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+logger.propagate = False
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -36,6 +54,26 @@ def create_app():
     # Ensure uploads directory exists
     os.makedirs('uploads', exist_ok=True)
 
+    @app.before_request
+    def log_request_info():
+        try:
+            req_body = request.get_data(as_text=True)
+        except Exception as e:
+            req_body = "Error reading request body"
+            logger.exception("Error when reading request body")
+        logger.info(f"Received request: method={request.method}, url={request.url}, body={req_body}")
+
+    @app.after_request
+    def log_response_info(response):
+        logger.info(f"Response: status={response.status}")
+        return response
+
+    @app.errorhandler(Exception)
+    def handle_exceptions(e):
+        logger.exception("Unhandled Exception occurred")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    logger.info("应用create_app()执行完毕")
     return app
 
 @app.route('/get_intervention', methods=['POST'])
@@ -259,10 +297,14 @@ def upload():
         user_collection = db[f"uploads_{user_id}"]
         user_collection.create_index("timestamp", unique=True)
         
+        from pymongo.errors import BulkWriteError
         try:
             result = user_collection.insert_many(csv_data, ordered=False)
+        except BulkWriteError as bwe:
+            logger.warning(f"Error inserting data for user {user_id}: {bwe.details}")
+            return jsonify({"status": "error", "message": "Insertion failed due to duplicate keys."}), 500
         except Exception as e:
-            # Handle insertion errors, for example duplicate key errors
+            logger.warning(f"Error inserting data for user {user_id}: {e}")
             return jsonify({"status": "error", "message": str(e)}), 500
         
         # Return a success message with inserted IDs
@@ -273,18 +315,68 @@ def upload():
 
 @app.route("/upload_ios", methods=['POST'])
 def upload_ios():
-    # please imatate the upload function above
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
-    if user_id and csv_content: 
-        file_path = "uploads/uploads_ios.csv"
-        # Open the file in append mode and write the csv_content
-        with open(file_path, 'a') as file:
-            file.write(csv_content + '\n')  # Adding a newline for better formatting
-        return jsonify({"status": "success", "user_id": user_id, "csv_content": csv_content}), 200
+    if user_id and csv_content:
+        # Correct the CSV header
+        csv_header = (
+            "timestamp,volume,screen_on_ratio,wifi_connected,wifi_ssid,"
+            "network_traffic,Rx_traffic,Tx_traffic,stepcount_sensor,"
+            "gpsLat,gpsLon,battery,current app,bluetooth devices,UNK\n"
+        )
+        # IMU headers: ,accX,accY,accZ,gyroX,gyroY,gyroZ,magneticFieldX,magneticFieldY,magneticFieldZ
+
+
+        csv_content = csv_header + csv_content
+        csv_io = io.StringIO(csv_content)
+        csv_reader = csv.DictReader(csv_io)
+        csv_data = []
+        for row in csv_reader:
+            row = {key: value for key, value in row.items() if key is not None and key.strip() != ""}
+            timestamp_str = row.get("timestamp", "")
+            if not timestamp_str:
+                logger.warning("Missing timestamp in row, skipping row")
+                continue
+            if timestamp_str.isdigit():
+                if len(timestamp_str) == 13:
+                    ts = int(timestamp_str) / 1000.0  # 毫秒
+                elif len(timestamp_str) == 16:
+                    ts = int(timestamp_str) / 1000000.0  # 微秒
+                else:
+                    ts = int(timestamp_str) / 1000.0
+                row["timestamp"] = datetime.datetime.utcfromtimestamp(ts)
+            else:
+                row["timestamp"] = datetime.datetime.fromisoformat(timestamp_str)
+            csv_data.append(row)
+        
+        if not csv_data:
+            return jsonify({"status": "error", "message": "No valid CSV data provided"}), 400
+
+        db = get_db()
+        user_collection = db[f"uploads_{user_id}"]
+        user_collection.create_index("timestamp", unique=True)
+        
+        existing_timestamps = user_collection.distinct("timestamp", {
+            "timestamp": {"$in": [row["timestamp"] for row in csv_data]}
+        })
+        csv_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
+        
+        from pymongo.errors import BulkWriteError
+        try:
+            if csv_data:  
+                result = user_collection.insert_many(csv_data, ordered=False)
+            else:
+                logger.info("No new data to insert after filtering duplicates.")
+        except BulkWriteError as bwe:
+            logger.warning(f"Error inserting data for user {user_id}: {bwe.details}")
+            return jsonify({"status": "error", "message": "Insertion failed due to duplicate keys."}), 500
+        
+        return jsonify({"status": "success", "user_id": user_id}), 200
+
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
 if __name__ == '__main__':
+    logger.info("应用启动测试日志")
     app = create_app()
     app.run(host="0.0.0.0")
