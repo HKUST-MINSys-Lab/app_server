@@ -124,7 +124,8 @@ see more [details](https://flask.palletsprojects.com/en/stable/tutorial/factory/
 - 425: Path already exists
 
 ## Todo
-1. Add Database
+- [x] Add Database
+- [] Add an item to distinguish IOS and Android Version.
 
 ## login on ECS
 Ip: 120.25.178.24 
