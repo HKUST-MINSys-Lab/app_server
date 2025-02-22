@@ -19,7 +19,7 @@ import datetime
 import logging
 from src.routes.ios_push_routes import ios_push_bp
 
-log_file = '/root/app_server/app_output.log'
+log_file = '/data/log/app_output.log'
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -27,9 +27,18 @@ logger.setLevel(logging.INFO)
 if logger.hasHandlers():
     logger.handlers.clear()
 
+# Console handler: prints INFO and above
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+logger.addHandler(console_handler)
+
+# File handler: saves WARNING and above
 file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
+file_handler.setLevel(logging.WARNING)
+file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
 logger.propagate = False
@@ -272,7 +281,7 @@ def upload_imu():
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
     
-    if not used_id:
+    if not user_id:
         return jsonify({"status": "error", "message": "no user_id"}), 400
     if not csv_content:
         return jsonify({"status": "error", "message": "no csv_content"}), 400
@@ -300,9 +309,16 @@ def upload_imu():
     db = get_db()
     imu_user_collection = db[f"imu_{user_id}"]
     imu_user_collection.create_index("timestamp", unique=True)
+    existing_timestamps = imu_user_collection.distinct("timestamp", {
+            "timestamp": {"$in": [row["timestamp"] for row in csv_data]}
+        })
+    csv_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
     
     try:
-        result = imu_user_collection.insert_many(csv_data, ordered=False)
+        if csv_data:  
+            result = imu_user_collection.insert_many(csv_data, ordered=False)
+        else:
+            logger.info("No new data to insert after filtering duplicates.")
     except BulkWriteError as bwe:
         logger.warning(f"Error inserting data for user {user_id}: {bwe.details}")
         return jsonify({"status": "error", "message": "Insertion failed due to duplicate keys."}), 500
@@ -342,10 +358,16 @@ def upload():
 
         db = get_db()
         user_collection = db[f"uploads_{user_id}"]
-        user_collection.create_index("timestamp", unique=True)
+        existing_timestamps = user_collection.distinct("timestamp", {
+            "timestamp": {"$in": [row["timestamp"] for row in csv_data]}
+        })
+        csv_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
         
         try:
-            result = user_collection.insert_many(csv_data, ordered=False)
+            if csv_data:  
+                result = user_collection.insert_many(csv_data, ordered=False)
+            else:
+                logger.info("No new data to insert after filtering duplicates.")
         except BulkWriteError as bwe:
             logger.warning(f"Error inserting data for user {user_id}: {bwe.details}")
             return jsonify({"status": "error", "message": "Insertion failed due to duplicate keys."}), 500
@@ -361,15 +383,63 @@ def upload():
 
 @app.route("/upload_ios", methods=['POST'])
 def upload_ios():
-    # please imatate the upload function above
     user_id = request.json.get("user_id")
     csv_content = request.json.get("csv_content")
-    if user_id and csv_content: 
-        file_path = "uploads/uploads_ios.csv"
-        # Open the file in append mode and write the csv_content
-        with open(file_path, 'a') as file:
-            file.write(csv_content + '\n')  # Adding a newline for better formatting
-        return jsonify({"status": "success", "user_id": user_id, "csv_content": csv_content}), 200
+    if user_id and csv_content:
+        # Correct the CSV header
+        csv_header = (
+            "timestamp,volume,screen_on_ratio,wifi_connected,wifi_ssid,"
+            "network_traffic,Rx_traffic,Tx_traffic,stepcount_sensor,"
+            "gpsLat,gpsLon,battery,current app,bluetooth devices,UNK\n" #todo:: we can remove the last occupied column
+        )
+        # IMU headers: ,accX,accY,accZ,gyroX,gyroY,gyroZ,magneticFieldX,magneticFieldY,magneticFieldZ
+
+
+        csv_content = csv_header + csv_content
+        csv_io = io.StringIO(csv_content)
+        csv_reader = csv.DictReader(csv_io)
+        csv_data = []
+        for row in csv_reader:
+            row = {key: value for key, value in row.items() if key is not None and key.strip() != ""}
+            timestamp_str = row.get("timestamp", "")
+            if not timestamp_str:
+                logger.warning("Missing timestamp in row, skipping row")
+                continue
+            if timestamp_str.isdigit():
+                if len(timestamp_str) == 13:
+                    ts = int(timestamp_str) / 1000.0  # 毫秒
+                elif len(timestamp_str) == 16:
+                    ts = int(timestamp_str) / 1000000.0  # 微秒
+                else:
+                    ts = int(timestamp_str) / 1000.0
+                row["timestamp"] = datetime.datetime.utcfromtimestamp(ts)
+            else:
+                row["timestamp"] = datetime.datetime.fromisoformat(timestamp_str)
+            csv_data.append(row)
+        
+        if not csv_data:
+            return jsonify({"status": "error", "message": "No valid CSV data provided"}), 400
+
+        db = get_db()
+        user_collection = db[f"uploads_{user_id}"]
+        user_collection.create_index("timestamp", unique=True)
+        
+        existing_timestamps = user_collection.distinct("timestamp", {
+            "timestamp": {"$in": [row["timestamp"] for row in csv_data]}
+        })
+        csv_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
+        
+        try:
+            if csv_data:  
+                result = user_collection.insert_many(csv_data, ordered=False)
+            else:
+                logger.info("No new data to insert after filtering duplicates.")
+        except BulkWriteError as bwe:
+            logger.warning(f"Error inserting data for user {user_id}: {bwe.details}")
+            return jsonify({"status": "error", "message": "Insertion failed due to duplicate keys."}), 500
+        
+        return jsonify({"status": "success", "user_id": user_id}), 200
+
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
