@@ -1,6 +1,7 @@
 from pymongo import MongoClient
 from datetime import datetime
 import csv
+import os
 
 root = "/root/ops"
 # Connect to MongoDB (adjust the URI if needed)
@@ -45,11 +46,14 @@ for coll in imu_collections:
         data_rows.append([collection_name, date_str, count])
 
 # Now, sort the final data_rows by Date (column index 1)
-data_rows = sorted(data_rows, key=lambda row: row[1])
+data_rows = sorted(data_rows, key=lambda row: row[1], reverse=True)
 
 # Save the aggregated data to CSV file with a timestamp in its filename
 timestamp = datetime.now().strftime("%m%dT%H%M")
-csv_filename = f"{root}/imu_collections_by_day_{timestamp}.csv"
+date_str = timestamp.split("T")[0]
+csv_path=f"{root}/{date_str}"
+os.makedirs(csv_path, exist_ok=True)
+csv_filename = f"{csv_path}/imu_collections_by_day_{timestamp}.csv"
 
 with open(csv_filename, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)

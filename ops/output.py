@@ -1,12 +1,13 @@
 import argparse
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import os
 
 # Set up argument parser
 parser = argparse.ArgumentParser(description="Export a MongoDB collection to CSV.")
 parser.add_argument("collection", help="The name of the collection to export")
+parser.add_argument("date", nargs="?", default=None, help="Optional: date filter in format %Y-%m-%d")
 args = parser.parse_args()
 
 # Directory to save the CSV file
@@ -19,8 +20,21 @@ client = MongoClient('mongodb://localhost:27017/')
 db = client['app']
 col = db[args.collection]
 
-# Retrieve all documents from the collection
-documents = list(col.find())
+# Build a query based on the presence of a date argument
+query = {}
+if args.date:
+    try:
+        # Parse the date string into a datetime object
+        start_date = datetime.strptime(args.date, "%Y-%m-%d")
+        # Calculate the end of the day (exclusive)
+        end_date = start_date + timedelta(days=1)
+        query = {"timestamp": {"$gte": start_date, "$lt": end_date}}
+    except ValueError as e:
+        print(f"Error parsing date: {e}")
+        exit(1)
+
+# Retrieve documents from the collection using the query filter (if any)
+documents = list(col.find(query))
 
 if not documents:
     print("No documents found in the collection.")
@@ -30,11 +44,11 @@ else:
     for doc in documents:
         header_keys.update(doc.keys())
     header_keys = list(header_keys)
-    header_keys.sort()  # Optional: sort the header keys alphabetically
+    header_keys.sort()  # Optional: sort header keys alphabetically
 
-    # Create a CSV filename with the collection name and a timestamp
-    timestamp = datetime.now().strftime('%Y%m%dT%H%M%S')
-    csv_filename = os.path.join(root, f"{args.collection}_{timestamp}.csv")
+    # Create a CSV filename with the collection name, current timestamp, and date filter (if provided)
+    timestamp = datetime.now().strftime('%m%dT%H%M')
+    csv_filename = os.path.join(root, "outputs", f"{args.collection}_{timestamp}{'_' + args.date if args.date else ''}.csv")
 
     # Write data to CSV using DictWriter
     with open(csv_filename, "w", newline="", encoding="utf-8") as csvfile:

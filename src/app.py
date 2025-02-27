@@ -1,3 +1,10 @@
+import collections
+import collections.abc
+collections.Iterable = collections.abc.Iterable
+collections.Mapping = collections.abc.Mapping
+collections.MutableSet = collections.abc.MutableSet
+collections.MutableMapping = collections.abc.MutableMapping
+
 import io
 import os
 import sys
@@ -5,8 +12,12 @@ import csv
 from pymongo import MongoClient
 from pymongo.errors import BulkWriteError
 
-# 将项目的根目录加入到 sys.path 中
+import threading
+import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.services.ios_push import send_silent_push
+
 
 from flask import Flask, request, jsonify
 from src.routes.upload_routes import upload_bp
@@ -60,6 +71,7 @@ def create_app():
     # Register blueprints
     app.register_blueprint(upload_bp)
     app.register_blueprint(gpt_bp)
+    app.register_blueprint(ios_push_bp)
     
     # Ensure uploads directory exists
     os.makedirs('uploads', exist_ok=True)
@@ -67,7 +79,18 @@ def create_app():
     @app.before_request
     def log_request_info():
         try:
-            req_body = request.get_data(as_text=True)
+            if request.path == "/upload_imu":
+                # 针对 /upload_imu 接口，只记录 csv_content 的长度信息，但不修改实际数据
+                json_data = request.get_json(silent=True)
+                if json_data and "csv_content" in json_data:
+                    log_json = dict(json_data)  # 做一份拷贝，避免修改原始数据
+                    csv_length = len(log_json["csv_content"])
+                    log_json["csv_content"] = f"[{csv_length} characters]"
+                    req_body = str(log_json)
+                else:
+                    req_body = request.get_data(as_text=True)
+            else:
+                req_body = request.get_data(as_text=True)
         except Exception as e:
             req_body = "Error reading request body"
             logger.exception("Error when reading request body")
@@ -286,20 +309,29 @@ def upload_imu():
     if not csv_content:
         return jsonify({"status": "error", "message": "no csv_content"}), 400
 
-    # Correct the CSV header
-    csv_header = (
-        "timestamp,acc_X,acc_Y,acc_Z,gyro_X,gyro_Y,gyro_Z,mag_X,mag_Y,mag_Z\n"
-    )
-    csv_content = csv_header + csv_content
+    # 定义预期的表头，不要重复添加
+    expected_header = "timestamp,acc_X,acc_Y,acc_Z,gyro_X,gyro_Y,gyro_Z,mag_X,mag_Y,mag_Z"
+    if not csv_content.startswith(expected_header):
+        csv_header = expected_header + "\n"
+        csv_content = csv_header + csv_content
     
     csv_io = io.StringIO(csv_content)
     csv_reader = csv.DictReader(csv_io)
     csv_data = []
     for row in csv_reader:
-        # Convert from string to integer
-        timestamp_ms = int(row["timestamp"])
+        # 如果遇到表头或其他非数字数据则跳过
+        timestamp_str = row["timestamp"]
         # Convert milliseconds to a Python datetime in UTC
-        row["timestamp"] = datetime.datetime.utcfromtimestamp(timestamp_ms / 1000.0)
+        if timestamp_str.isdigit():
+            if len(timestamp_str) == 13:
+                ts = int(timestamp_str) / 1000.0  # 毫秒
+            elif len(timestamp_str) == 16:
+                ts = int(timestamp_str) / 1000000.0  # 微秒
+            else:
+                ts = int(timestamp_str) / 1000.0
+            row["timestamp"] = datetime.datetime.utcfromtimestamp(ts)
+        else:
+            row["timestamp"] = datetime.datetime.fromisoformat(timestamp_str)
         csv_data.append(row)
     
     # Basic check if CSV data is not empty
@@ -443,7 +475,56 @@ def upload_ios():
     else: 
         return jsonify({"status": "error", "message": "unsuccessful"}), 400
 
+@app.route('/register_device_token', methods=['POST'])
+def register_device_token():
+    """
+    客户端调用该接口来注册自己的 device token，
+    请求 JSON 中需要包含 user_id 和 device_token 字段。
+    """
+    try:
+        user_id = request.json.get("user_id")
+        device_token = request.json.get("device_token")
+        if not user_id or not device_token:
+            return jsonify({"status": "error", "message": "缺少 user_id 或 device_token"}), 400
+        
+        db = get_db()
+        # 更新或插入 token 信息，记录注册时间（便于后续清理或统计）
+        db.device_tokens.update_one(
+            {"user_id": user_id, "device_token": device_token},
+            {"$set": {"registered_time": datetime.datetime.utcnow()}},
+            upsert=True
+        )
+        return jsonify({"status": "success", "message": "设备 token 注册成功"}), 200
+    except Exception as e:
+        logger.exception("注册设备 token 时出错")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    
+def background_push_notification():
+    """
+    后台任务：每 300 秒自动向所有已注册设备发送静默推送通知。
+    """
+    while True:
+        custom_data = {"title": "UPLOAD", "body": "Please upload your data"}
+        try:
+            db = get_db()
+            # 从 device_tokens 集合中查询所有 token
+            tokens_cursor = db.device_tokens.find({})
+            tokens_list = [doc["device_token"] for doc in tokens_cursor]
+            
+            if not tokens_list:
+                logger.info("暂无注册的设备 token，跳过本次推送。")
+            else:
+                for token in tokens_list:
+                    if send_silent_push(token, custom_data):
+                        logger.info(f"向 token {token} 推送成功")
+                    else:
+                        logger.error(f"向 token {token} 推送失败")
+        except Exception as e:
+            logger.exception("后台推送过程中出现异常")
+        time.sleep(300)
+
 if __name__ == '__main__':
     logger.info("应用启动测试日志")
     app = create_app()
+    threading.Thread(target=background_push_notification, daemon=True).start()
     app.run(host="0.0.0.0")

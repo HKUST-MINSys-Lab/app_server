@@ -11,59 +11,58 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 # set log path
 log_file = "/root/app_server/logs/summary.log"
-def generate_summary(signature, db):
+def generate_summary(user_id, db):
     """
     根据每天数据生成 summary。
     如果当前时间未到晚上 10 点，则返回提示信息：
       "Today's summary is available at 10pm."
-    如果前一天有 summary，则附加上 "This is your yesterday summary; you can choose to rate it if not yet done." 及对应的昨日 summary。
-    如果已经过了 10 点，则先检查 CSV 文件中是否存在今天的 summary，
+    如果前一天有 summary，则附加上 "This is your yesterday summary; you can choose to rate it if not yet done." 并附上对应的昨日 summary。
+    如果已过晚上10点，则先检查数据库中是否存在今天的 summary，
       如果存在直接返回，
-      否则调用 OpenAI API 生成今天的 summary，并保存到 CSV 文件中后返回。
+      否则调用 OpenAI API 生成今天的 summary，并保存后返回。
     """
     from datetime import datetime, time, timedelta
     now = datetime.now()
     today_date = now.date()
-    ten_pm = datetime.combine(today_date, time(22, 0, 0))
+    ten_pm = datetime.combine(today_date, time(21, 0, 0))
 
     # 定义辅助函数：从 CSV 中加载指定 user_id 和日期的 summary
     def load_summary(user_id, date):
         summary_feedback = db.summary_feedbacks.find_one({
-        "user_id": user_id,
-        "timestamp": str(date)  # Ensure this matches the format stored in the DB.
+            "user_id": user_id,
+            "timestamp": str(date)  # 确保格式匹配数据库中存储的格式
         })
         if summary_feedback:
             logger.info(f"Found summary: {summary_feedback}")
             return summary_feedback
         return None
-
-    # if now < ten_pm:
-    #     # 未到晚上 10 点：返回提示信息，并检查是否有昨日的 summary
-    #     message = "Today's summary is available at 10pm."
-    #     # output = {"message": message}
-    #     yesterday = today_date - timedelta(days=1)
-    #     yest_summary = load_summary(signature, yesterday)
-    #     if yest_summary is not None:
-    #         message += " This is your yesterday summary; you can choose to rate it if not yet done."
-    #         summaryA = message + "\n" + yest_summary.get("summaryA")
-    #         summaryB = message + "\n" + yest_summary.get("summaryB")
-    #     else:
-    #         print("yest_summary is None")
-    #         summaryA = message
-    #         summaryB = message
-    #     return summaryA, summaryB
-    # else:
-    if True: # for testing
+    print(f"data for summary: {extract_data(user_id, db)}")
+    if now < ten_pm:
+        # 未到晚上 10 点：返回提示信息，并检查是否有昨日的 summary
+        message = "Today's summary is available at 10pm."
+        # output = {"message": message}
+        yesterday = today_date - timedelta(days=1)
+        yest_summary = load_summary(user_id, yesterday)
+        if yest_summary is not None:
+            message += " This is your yesterday summary; you can choose to rate it if not yet done."
+            summaryA = message + "\n" + yest_summary.get("summaryA")
+            summaryB = message + "\n" + yest_summary.get("summaryB")
+        else:
+            print("yest_summary is None")
+            summaryA = message
+            summaryB = message
+        return summaryA, summaryB
+    else:
         # 已到或超过晚上10点：检查是否已存在今天的 summary
-        today_summary = load_summary(signature, today_date)
+        today_summary = load_summary(user_id, today_date)
         if today_summary is not None:
             return today_summary.get("summaryA"), today_summary.get("summaryB")
         else:
             # 今天的 summary 不存在，则生成 summary
-            data = extract_data(signature, db)
+            data = extract_data(user_id, db)
             client = AzureOpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
-                api_version="2024-10-01-preview",
+                api_version="2024-06-01",
                 azure_endpoint="https://hkust.azure-api.net/"
             )
             messages = [
@@ -103,51 +102,46 @@ def generate_summary(signature, db):
             summaryB = summaries.get("summaryB")
 
             # 保存生成的 summary 到 CSV 文件
-            new_entry = {"user_id": signature, "date": str(today_date), "summaryA": summaryA, "summaryB": summaryB}
+            new_entry = {"user_id": user_id, "date": str(today_date), "summaryA": summaryA, "summaryB": summaryB}
             db.daily_summaries.insert_one(new_entry)
             return summaryA, summaryB
 
 
-def extract_data(signature, db):
+def extract_data(user_id, db):
     """
     Extracts data from the database for a specific user.
     """
-    data_csv1 = "/root/app_server/uploads/uploads_ios.csv"
-    data1 = pd.read_csv(data_csv1, na_values=["NA"])
-
-    user_collection = db[f"uploads_{signature}"]
-    # Query last 1 day data
+    # 直接从 MongoDB 查询最近一天的数据
+    user_collection = db[f"uploads_{user_id}"]
     last_day = datetime.datetime.utcnow() - datetime.timedelta(days=1)
-
-    if user_collection.count_documents({"timestamp": {"$gt": last_day}}) == 0:
-        logger.info(f"No data found for {signature} in the last 1 day in datacsv2")
-        data2 = pd.DataFrame()
-    else:
-        last_day_data = user_collection.find({"timestamp": {"$gt": last_day}})
-        data_list = list(last_day_data)
-        data2 = pd.DataFrame(data_list)
-        data2['signature'] = signature
-    #! note: the timestamp format may differnt
-    data = pd.concat([data1, data2])
-    # 将 'timestamp' 列转换为日期时间类型，如果转换失败则设为 NaT，
-    # 然后删除转换失败的行
+    data_cursor = user_collection.find({"timestamp": {"$gt": last_day}})
+    data_list = list(data_cursor)
+    if not data_list:
+        return json.dumps([])
+    data = pd.DataFrame(data_list)
+    if 'user_id' not in data.columns:
+        data['user_id'] = user_id
+    
+    # 将 'timestamp' 列转换为日期时间类型
     data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
+    data['timestamp'] = data['timestamp'].dt.tz_localize('UTC').dt.tz_convert('Asia/Shanghai')
     data = data.dropna(subset=['timestamp'])
     
-    # 将预期为数值的列转换为数值类型，转换错误或缺失的填充为0
-    numeric_columns = ["stepCount", "distance", "heartRate", "sleepHours",
-                       "accX", "accY", "accZ",
-                       "gyroX", "gyroY", "gyroZ",
-                       "magneticFieldX", "magneticFieldY", "magneticFieldZ",
-                       "latitude", "longitude", "screenUsageTime", "batteryLevel",
-                       "networkSentBytes", "networkReceivedBytes"]
+    
+    # 根据上传接口的字段名称转换数值类型，将所有需要进行数值计算的字段都转换
+    numeric_columns = [
+        "volume", "screen_on_ratio", "network_traffic", "Rx_traffic", "Tx_traffic",
+        "stepcount_sensor", "gpsLat", "gpsLon", "battery",
+        "accX", "accY", "accZ", "gyroX", "gyroY", "gyroZ",
+        "magneticFieldX", "magneticFieldY", "magneticFieldZ"
+    ]
     for col in numeric_columns:
         if col in data.columns:
             data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
     
-    data = data[data['signature'] == signature]
-    # extract the data for today
-    today = pd.Timestamp.now().date()
+    # 提取今天的数据
+    today = pd.Timestamp.now(tz='Asia/Shanghai').date()
+
     data = data[data['timestamp'].dt.date == today]
     
     # 对IMU数据进行聚合处理
@@ -175,7 +169,7 @@ def extract_data(signature, db):
     # convert the aggregated data to a list of records
     records = data.to_dict(orient='records')
     
-    # 对每个记录（group）进行清洗
+    # 对每个记录进行清洗
     cleaned_records = []
     for record in records:
         cleaned_record = {}
