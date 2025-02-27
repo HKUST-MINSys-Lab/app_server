@@ -30,6 +30,8 @@ import datetime
 import logging
 from src.routes.ios_push_routes import ios_push_bp
 
+from services.mq import send_to_queue
+
 log_file = '/data/log/app_output.log'
 
 logger = logging.getLogger(__name__)
@@ -340,15 +342,25 @@ def upload_imu():
 
     db = get_db()
     imu_user_collection = db[f"imu_{user_id}"]
-    imu_user_collection.create_index("timestamp", unique=True)
-    existing_timestamps = imu_user_collection.distinct("timestamp", {
-            "timestamp": {"$in": [row["timestamp"] for row in csv_data]}
-        })
-    csv_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
     
+    # 优化1：在应用启动时或第一次使用时创建索引，避免每次请求都调用
+    if "timestamp_1" not in imu_user_collection.index_information():
+        imu_user_collection.create_index("timestamp", unique=True)
+
+    # 获取所有待插入数据的 timestamp 列表
+    incoming_timestamps = [row["timestamp"] for row in csv_data]
+
+    # 优化2：使用 find 查询，返回 projection 仅包含 timestamp 字段，转换为 set 后过滤
+    cursor = imu_user_collection.find(
+        {"timestamp": {"$in": incoming_timestamps}},
+        {"timestamp": 1, "_id": 0}
+    )
+    existing_timestamps = {doc["timestamp"] for doc in cursor}
+    filtered_data = [row for row in csv_data if row["timestamp"] not in existing_timestamps]
+
     try:
-        if csv_data:  
-            result = imu_user_collection.insert_many(csv_data, ordered=False)
+        if filtered_data:
+            result = imu_user_collection.insert_many(filtered_data, ordered=False)
         else:
             logger.info("No new data to insert after filtering duplicates.")
     except BulkWriteError as bwe:
@@ -358,6 +370,14 @@ def upload_imu():
         logger.warning(f"Error inserting data for user {user_id}: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
     
+    # 将数据发送到 RabbitMQ 队列进行异步处理
+    try:
+        send_to_queue({"user_id": user_id, "data": filtered_data})
+    except Exception as e:
+        logging.error("Send message failed: %s", e)
+        # 可根据需求返回错误或继续返回 success 状态
+        return jsonify({"status": "error", "message": "Failed to send to queue"}), 500
+
     # Return a success message with inserted IDs
     return jsonify({"status": "success", "user_id": user_id}), 200
 

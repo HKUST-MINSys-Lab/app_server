@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  flask_app:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    network_mode: "host"
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_HOST=localhost
+  
+  har_service:
+    build:
+      context: ./har
+      dockerfile: Dockerfile
+    network_mode: "host"
+    depends_on:
+      - rabbitmq
+    environment:
+      - RABBITMQ_HOST=localhost
+    command: ["taskset", "-c", "1", "python", "har.py"]
+  
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "6672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/data/rabbitmq
+  
+volumes:
+  rabbitmq_data:
